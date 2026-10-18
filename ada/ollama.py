@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""HTTP access to a local Ollama server: URL check and model list.
+"""HTTP access to a local Ollama server: URL check, model list, streamed chat.
 
 No GTK imports here, so this module can be tested without a display.
 """
 import http.client
 import ipaddress
 import json
+import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -15,6 +17,12 @@ DEFAULT_URL = "http://localhost:11434"
 DEFAULT_TIMEOUT = 10.0
 # The answer of a model list is tiny. Anything bigger is a broken or hostile server.
 MAX_RESPONSE_BYTES = 1024 * 1024
+# A streamed chat: how long we wait for the next piece. Ollama may need a while
+# to load a model before the first word comes.
+STREAM_IDLE_TIMEOUT = 120.0
+MAX_LINE_BYTES = 1024 * 1024
+MAX_STREAM_BYTES = 16 * 1024 * 1024
+_ROLES = ("system", "user", "assistant")
 
 # Networks where plain http is acceptable: loopback, private ranges, Tailscale.
 _TRUSTED_NETWORKS = tuple(
@@ -35,6 +43,8 @@ _MSG_TIMEOUT = "Zeitüberschreitung: Ollama antwortet nicht rechtzeitig."
 _MSG_UNREACHABLE = "Ollama ist nicht erreichbar. Adresse, Port und Zertifikat prüfen."
 _MSG_BROKEN = "Die Verbindung zu Ollama wurde unterbrochen."
 _MSG_INVALID = "Ollama hat eine ungültige Antwort geschickt."
+_MSG_CUT = "Die Antwort wurde vorzeitig beendet und ist unvollständig."
+_MSG_BAD_REQUEST = "Ungültige Anfrage: Modell oder Nachrichten sind fehlerhaft."
 
 
 class OllamaError(Exception):
@@ -156,3 +166,152 @@ def list_models(base_url, timeout=DEFAULT_TIMEOUT):
     except (http.client.HTTPException, OSError) as exc:
         raise OllamaError(_MSG_BROKEN) from exc
     return parse_models(raw)
+
+
+def _server_message(text):
+    """Text from the server, made safe to show: printable only, shortened."""
+    text = "".join(c for c in text if c.isprintable())[:200]
+    return f"Ollama meldet: {text}" if text else _MSG_INVALID
+
+
+def _error_from_body(raw, status):
+    """Error text from the body of a non-200 answer ({"error": "..."} if any)."""
+    try:
+        text = json.loads(raw.decode("utf-8")).get("error")
+    except (ValueError, AttributeError, RecursionError):
+        text = None
+    if isinstance(text, str) and text:
+        return _server_message(text)
+    return f"Ollama meldet Fehler {status}."
+
+
+def _clean_chat_input(model, messages):
+    """Check the request; keep only role and content of each message."""
+    ok = isinstance(model, str) and 0 < len(model) <= 200 and model.isprintable()
+    ok = ok and isinstance(messages, list) and len(messages) > 0
+    ok = ok and all(
+        isinstance(m, dict)
+        and m.get("role") in _ROLES
+        and isinstance(m.get("content"), str)
+        for m in messages
+    )
+    if not ok:
+        raise OllamaError(_MSG_BAD_REQUEST)
+    return [{"role": m["role"], "content": m["content"]} for m in messages]
+
+
+def _parse_chat_line(line):
+    """One line of the stream -> (text piece, done). Raises OllamaError if broken."""
+    try:
+        data = json.loads(line.decode("utf-8"))
+    except (ValueError, RecursionError):  # includes bad UTF-8 and bad JSON
+        raise OllamaError(_MSG_INVALID) from None
+    if not isinstance(data, dict):
+        raise OllamaError(_MSG_INVALID)
+    if "error" in data:
+        error = data["error"]
+        raise OllamaError(_server_message(error if isinstance(error, str) else ""))
+    message = data.get("message")
+    text = message.get("content") if isinstance(message, dict) else None
+    return (text if isinstance(text, str) else ""), data.get("done") is True
+
+
+def _split_lines(response):
+    """Yield the lines of the answer. Memory use is limited."""
+    buffer = b""
+    total = 0
+    while True:
+        chunk = response.read1(65536)
+        if not chunk:
+            yield buffer  # the last line may come without a newline
+            return
+        total += len(chunk)
+        if total > MAX_STREAM_BYTES:
+            raise OllamaError(_MSG_INVALID)
+        *lines, buffer = (buffer + chunk).split(b"\n")
+        if len(buffer) > MAX_LINE_BYTES:
+            raise OllamaError(_MSG_INVALID)
+        yield from lines
+
+
+class ChatStream:
+    """One streamed answer from POST /api/chat.
+
+    Iterate over it to get the answer piece by piece, as plain text. Do this in
+    a background thread, never in the UI thread. cancel() may be called from any
+    thread (the stop button): the iteration then ends quietly, and the caller
+    keeps the text received so far. If the stream fails, OllamaError is raised
+    after the pieces that already arrived. One ChatStream, one answer.
+    """
+
+    def __init__(self, base_url, model, messages,
+                 idle_timeout=STREAM_IDLE_TIMEOUT, connect_timeout=DEFAULT_TIMEOUT):
+        self._parts = urllib.parse.urlsplit(validate_url(base_url))
+        self._body = json.dumps(
+            {"model": model, "messages": _clean_chat_input(model, messages),
+             "stream": True}
+        ).encode("utf-8")
+        self._idle_timeout = idle_timeout
+        self._connect_timeout = connect_timeout
+        self._cancelled = threading.Event()
+        self._conn = None
+
+    def cancel(self):
+        """Stop at once, even while waiting for the server. Safe to call twice."""
+        self._cancelled.set()
+        sock = getattr(self._conn, "sock", None)
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)  # wakes up a blocked read
+            except OSError:
+                pass  # already closed
+
+    def __iter__(self):
+        if self._cancelled.is_set():
+            return
+        parts = self._parts
+        # http.client follows no redirects and uses no proxy from the environment.
+        if parts.scheme == "https":
+            connection = http.client.HTTPSConnection  # checks the certificate
+        else:
+            connection = http.client.HTTPConnection
+        conn = self._conn = connection(
+            parts.hostname, parts.port, timeout=self._connect_timeout
+        )
+        started = False  # True once the server has answered
+        try:
+            conn.connect()
+            if self._cancelled.is_set():  # cancel() came while connecting
+                return
+            conn.sock.settimeout(self._idle_timeout)
+            conn.request(
+                "POST", parts.path + "/api/chat", self._body,
+                {"Content-Type": "application/json",
+                 "Accept": "application/x-ndjson"},
+            )
+            response = conn.getresponse()
+            started = True
+            if response.status != 200:
+                raise OllamaError(_error_from_body(response.read(4096), response.status))
+            for line in _split_lines(response):
+                if self._cancelled.is_set():
+                    return
+                if not line.strip():
+                    continue
+                text, done = _parse_chat_line(line)
+                if text:
+                    yield text
+                if done:
+                    return
+            if not self._cancelled.is_set():  # closed without the final "done"
+                raise OllamaError(_MSG_CUT)
+        except OllamaError:
+            raise
+        except TimeoutError as exc:
+            if not self._cancelled.is_set():
+                raise OllamaError(_MSG_TIMEOUT) from exc
+        except (http.client.HTTPException, OSError) as exc:
+            if not self._cancelled.is_set():
+                raise OllamaError(_MSG_BROKEN if started else _MSG_UNREACHABLE) from exc
+        finally:
+            conn.close()
