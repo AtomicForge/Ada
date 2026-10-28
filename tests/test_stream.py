@@ -110,7 +110,7 @@ def run_in_thread(stream):
         try:
             for piece in stream:
                 state.parts.append(piece)
-        except OllamaError as exc:
+        except Exception as exc:  # also unexpected ones: the test must see them
             state.error = exc
         finally:
             state.ended.set()
@@ -206,7 +206,7 @@ class StreamContentTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(parts, ["ok"])
 
-    def test_nothing_is_read_after_done(self):
+    def test_text_after_done_is_ignored(self):
         def behavior(h):
             start(h)
             send(h, line("Hi") + line("", True) + b"garbage\n")
@@ -318,6 +318,31 @@ class StreamErrorTests(unittest.TestCase):
         # refused at once as invalid, not only after the idle timeout
         self.assertEqual(str(error), ollama._MSG_INVALID)
         self.assertLess(elapsed, 0.8)
+
+    def test_oversized_complete_line_is_refused(self):
+        def behavior(h):
+            start(h)
+            # a finished, valid line, but too long
+            send(h, line("x" * 500) + line("", True))
+
+        with serve(behavior) as (url, _):
+            with mock.patch.object(ollama, "MAX_LINE_BYTES", 100):
+                parts, error = collect(stream_of(url))
+        self.assertEqual(parts, [])
+        self.assertEqual(str(error), ollama._MSG_INVALID)
+
+    def test_a_stream_can_be_used_only_once(self):
+        def behavior(h):
+            start(h)
+            send(h, line("Hi", True))
+            finish(h)
+
+        with serve(behavior) as (url, requests):
+            stream = stream_of(url)
+            self.assertEqual(collect(stream), (["Hi"], None))
+            with self.assertRaises(RuntimeError):
+                collect(stream)
+        self.assertEqual(len(requests), 1)
 
     def test_oversized_stream_is_refused(self):
         def behavior(h):

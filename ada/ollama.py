@@ -150,7 +150,9 @@ def list_models(base_url, timeout=DEFAULT_TIMEOUT):
     from a background thread, never from the UI thread."""
     url = validate_url(base_url) + "/api/tags"
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    deadline = time.monotonic() + timeout  # total limit, not just per read
+    # About this long in total, not just per read (one blocked read may add up
+    # to another `timeout`).
+    deadline = time.monotonic() + timeout
     try:
         with _OPENER.open(request, timeout=timeout) as response:
             raw = _read_limited(response, deadline)
@@ -229,7 +231,7 @@ def _split_lines(response):
         if total > MAX_STREAM_BYTES:
             raise OllamaError(_MSG_INVALID)
         *lines, buffer = (buffer + chunk).split(b"\n")
-        if len(buffer) > MAX_LINE_BYTES:
+        if len(buffer) > MAX_LINE_BYTES or any(len(x) > MAX_LINE_BYTES for x in lines):
             raise OllamaError(_MSG_INVALID)
         yield from lines
 
@@ -255,9 +257,12 @@ class ChatStream:
         self._connect_timeout = connect_timeout
         self._cancelled = threading.Event()
         self._conn = None
+        self._used = False
 
     def cancel(self):
-        """Stop at once, even while waiting for the server. Safe to call twice."""
+        """Stop at once, even while waiting for the server. Safe to call twice.
+        One limit: while the connection is still being made (at most
+        connect_timeout, instant on localhost), the stop takes effect afterwards."""
         self._cancelled.set()
         sock = getattr(self._conn, "sock", None)
         if sock is not None:
@@ -267,6 +272,9 @@ class ChatStream:
                 pass  # already closed
 
     def __iter__(self):
+        if self._used:
+            raise RuntimeError("A ChatStream can be used only once.")
+        self._used = True
         if self._cancelled.is_set():
             return
         parts = self._parts
