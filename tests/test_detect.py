@@ -84,9 +84,17 @@ class FindOllamaTests(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 1.2)
 
     def test_default_timeout_is_short(self):
-        self.assertEqual(detect.PROBE_TIMEOUT, 1.0)
-        for func in (detect.find_ollama, detect.find_searxng):
-            self.assertEqual(inspect.signature(func).parameters["timeout"].default, 1.0)
+        for func, value in ((detect.find_ollama, 1.0), (detect.find_searxng, 8.0)):
+            self.assertEqual(inspect.signature(func).parameters["timeout"].default, value)
+
+    def test_searxng_may_be_slow(self):
+        # a real search takes a moment: it must not be given up after 1 second
+        def slow(h):
+            time.sleep(1.5)
+            searx(h)
+
+        with serve(slow) as (url, _):
+            self.assertEqual(detect.find_searxng([url]), url)
 
     def test_default_lists_are_localhost_only(self):
         for url in detect.OLLAMA_CANDIDATES + detect.SEARXNG_CANDIDATES:
