@@ -17,7 +17,7 @@ import gi  # noqa: E402
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, GLib, GObject, Gtk  # noqa: E402
 
 APP_ID = "io.github.AtomicForge.Ada"
 
@@ -78,17 +78,22 @@ class ChatPage(Gtk.Box):
     """One chat: the text so far, a model chooser, an input line, Send/Stop.
     The text is shown in a TextView, which never interprets markup."""
 
-    def __init__(self, store):
+    def __init__(self, store, on_change, chat_id=None, model=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6,
                          margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
         self._store = store
-        self._chat_id = None
+        self._on_change = on_change
+        self._chat_id = chat_id
+        self._wanted_model = model
         self._stream = None
         self._answer = []
         self._text = Gtk.TextView(editable=False, cursor_visible=False, left_margin=6, right_margin=6,
                                   wrap_mode=Gtk.WrapMode.WORD_CHAR)
         self._buffer = self._text.get_buffer()
         self._end = self._buffer.create_mark("end", self._buffer.get_end_iter(), False)
+        if chat_id is not None:
+            for m in store.get_messages(chat_id):
+                self._show(("Du: " if m["role"] == "user" else "ADA: ") + m["content"] + "\n\n")
         self.append(Gtk.ScrolledWindow(vexpand=True, child=self._text))
         self._status = Gtk.Label(xalign=0, wrap=True, css_classes=["error"])
         self.append(self._status)
@@ -105,6 +110,10 @@ class ChatPage(Gtk.Box):
         self.append(row)
         threading.Thread(target=self._load_models, daemon=True).start()
 
+    @property
+    def chat_id(self):
+        return self._chat_id
+
     def stop(self):
         if self._stream:
             self._stream.cancel()
@@ -118,8 +127,10 @@ class ChatPage(Gtk.Box):
         GLib.idle_add(self._models_loaded, names, error)
 
     def _models_loaded(self, names, error):
-        for name in names:
+        for index, name in enumerate(names):
             self._models.append(name)
+            if name == self._wanted_model:
+                self._dropdown.set_selected(index)
         self._status.set_text(error)
 
     def _on_button(self, *_):
@@ -149,6 +160,7 @@ class ChatPage(Gtk.Box):
         except StoreError as exc:
             self._status.set_text(str(exc))
             return
+        self._on_change()
         self._status.set_text("")
         self._entry.set_text("")
         self._entry.set_sensitive(False)
@@ -179,6 +191,7 @@ class ChatPage(Gtk.Box):
         except StoreError as exc:
             error = error or str(exc)
         self._show("\n\n")
+        self._on_change()
         self._status.set_text(error)
         self._stream = None
         self._button.set_label("Senden")
@@ -191,8 +204,10 @@ class Window(Adw.ApplicationWindow):
         super().__init__(title="ADA", default_width=900, default_height=650, **kwargs)
         self._store = None
         self._chat = None
+        self._ids = []
+        self._header = Adw.HeaderBar()
         self._view = Adw.ToolbarView()
-        self._view.add_top_bar(Adw.HeaderBar())
+        self._view.add_top_bar(self._header)
         self.set_content(self._view)
         page = UnlockPage(not os.path.exists(db_path()), self._unlocked)
         self._view.set_content(page)
@@ -201,8 +216,77 @@ class Window(Adw.ApplicationWindow):
 
     def _unlocked(self, store):
         self._store = store
-        self._chat = ChatPage(store)
-        self._view.set_content(self._chat)
+        self._split = Adw.OverlaySplitView(show_sidebar=True)
+        toggle = Gtk.ToggleButton(icon_name="sidebar-show-symbolic", tooltip_text="Seitenleiste")
+        toggle.bind_property("active", self._split, "show-sidebar",
+                             GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_CREATE)
+        self._header.pack_start(toggle)
+        new = Gtk.Button(label="Neuer Chat", margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
+        new.connect("clicked", lambda *_: self._open())
+        self._list = Gtk.ListBox(css_classes=["navigation-sidebar"])
+        self._list.connect("row-activated", self._row_activated)
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        side.append(new)
+        side.append(Gtk.ScrolledWindow(vexpand=True, child=self._list))
+        self._split.set_sidebar(side)
+        self._view.set_content(self._split)
+        self._open()
+
+    def _open(self, chat_id=None, model=None):
+        if self._chat:
+            self._chat.stop()
+        self._chat = ChatPage(self._store, self._refresh, chat_id, model)
+        self._split.set_content(self._chat)
+        self._refresh()
+
+    def _refresh(self):
+        """Rebuild the chat list; the open chat is highlighted."""
+        self._list.remove_all()
+        self._ids = []
+        try:
+            chats = self._store.list_chats()
+        except StoreError:
+            return
+        for chat_id, title, model, _updated in chats:
+            row = Gtk.Box(spacing=6)
+            row.append(Gtk.Label(label=title, xalign=0, hexpand=True, ellipsize=3))  # 3 = end
+            trash = Gtk.Button(icon_name="user-trash-symbolic", css_classes=["flat"], tooltip_text="Löschen")
+            trash.connect("clicked", self._ask_delete, chat_id, title)
+            row.append(trash)
+            self._list.append(row)
+            self._ids.append((chat_id, model))
+            if chat_id == self._chat.chat_id:
+                self._list.select_row(self._list.get_row_at_index(len(self._ids) - 1))
+
+    def _row_activated(self, _list, row):
+        chat_id, model = self._ids[row.get_index()]
+        if chat_id != self._chat.chat_id:
+            self._open(chat_id, model)
+
+    def _ask_delete(self, _button, chat_id, title):
+        dialog = Adw.AlertDialog(heading="Chat löschen?",
+                                 body=f"„{title}“ wird endgültig gelöscht.")
+        dialog.add_response("cancel", "Abbrechen")
+        dialog.add_response("delete", "Löschen")
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._delete_answer, chat_id)
+        dialog.present(self)
+
+    def _delete_answer(self, _dialog, response, chat_id):
+        if response != "delete":
+            return
+        if self._chat.chat_id == chat_id:
+            self._chat.stop()
+        try:
+            self._store.delete_chat(chat_id)
+        except StoreError:
+            return
+        if self._chat.chat_id == chat_id:
+            self._open()
+        else:
+            self._refresh()
 
     def _on_close(self, *_):
         if self._chat:
