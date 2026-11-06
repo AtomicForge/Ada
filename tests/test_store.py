@@ -187,6 +187,44 @@ class ChatTests(Base):
         self.assertEqual(s.get_messages(c)[0]["content"], text)
 
 
+class SettingTests(Base):
+    def test_default_and_round_trip(self):
+        s = self.open()
+        self.assertEqual(s.get_setting("ollama_url"), "")
+        self.assertEqual(s.get_setting("ollama_url", "x"), "x")
+        s.set_setting("ollama_url", "http://localhost:11434")
+        s.set_setting("ollama_url", "http://localhost:1")  # replaces
+        s.set_setting("searxng_url", "")
+        s.set_setting("web_search", "1")
+        self.assertEqual(s.get_setting("web_search"), "1")
+        self.assertEqual(s.get_setting("ollama_url"), "http://localhost:1")
+        self.assertEqual(s.get_setting("searxng_url"), "")
+
+    def test_settings_survive_reopen(self):
+        s = self.open()
+        s.set_setting("searxng_url", "http://localhost:8080")
+        s.close()
+        self.assertEqual(self.open().get_setting("searxng_url"), "http://localhost:8080")
+
+    def test_unknown_names_and_bad_values_are_refused(self):
+        s = self.open()
+        for name in ("schema", "setting:ollama_url", "other", "", None):
+            with self.subTest(name=name):
+                with self.assertRaises(StoreError):
+                    s.set_setting(name, "x")
+                with self.assertRaises(StoreError):
+                    s.get_setting(name)
+        for value in (None, 5, "x" * (store.MAX_SETTING + 1), "a\x00b"):
+            with self.assertRaises(StoreError):
+                s.set_setting("ollama_url", value)
+
+    def test_settings_do_not_touch_the_schema_entry(self):
+        s = self.open()
+        s.set_setting("ollama_url", "http://localhost:1")
+        s.close()
+        self.open().close()  # still opens: the schema check is intact
+
+
 class MemoryAndStateTests(Base):
     def test_memory_starts_empty_and_can_be_replaced(self):
         s = self.open()

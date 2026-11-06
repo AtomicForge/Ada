@@ -20,6 +20,8 @@ MAX_TITLE = 200
 MAX_MESSAGE = 1024 * 1024
 MAX_MEMORY = 20000
 ROLES = ("user", "assistant", "system")
+SETTINGS = ("ollama_url", "searxng_url", "web_search")  # the only settings; stored in meta as "setting:<name>"
+MAX_SETTING = 500
 _SCHEMA_VERSION = 1
 
 _MSG_NO_CIPHER = "SQLCipher fehlt oder ist nicht aktiv. ADA speichert nichts unverschlüsselt."
@@ -164,3 +166,15 @@ class Store:
 
     def set_memory(self, text):
         self._run("UPDATE memory SET text = ? WHERE id = 1", (_text(text, MAX_MEMORY, empty_ok=True),), write=True)
+
+    def get_setting(self, name, default=""):
+        if name not in SETTINGS:
+            raise StoreError(_MSG_BAD_DATA)
+        row, _ = self._run("SELECT value FROM meta WHERE key = ?", ("setting:" + name,), one=True)
+        return row[0] if row else default
+
+    def set_setting(self, name, value):
+        if name not in SETTINGS:
+            raise StoreError(_MSG_BAD_DATA)
+        self._run("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                  ("setting:" + name, _text(value, MAX_SETTING, empty_ok=True)), write=True)
