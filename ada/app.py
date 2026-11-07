@@ -100,7 +100,14 @@ class ChatPage(Gtk.Box):
         if chat_id is not None:
             for m in store.get_messages(chat_id):
                 self._show(("Du: " if m["role"] == "user" else "ADA: ") + m["content"] + "\n\n")
-        self.append(Gtk.ScrolledWindow(vexpand=True, child=self._text))
+        scroll = Gtk.ScrolledWindow(vexpand=True, child=self._text)
+        self.append(scroll)
+        if chat_id is not None:  # an old chat opens at its end
+            adjustment = scroll.get_vadjustment()
+            pin = adjustment.connect("changed", self._to_bottom)  # the height is known step by step
+            GLib.timeout_add(1500, self._unpin, adjustment, pin)
+        self._info = Gtk.Label(xalign=0, wrap=True, css_classes=["dim-label"])
+        self.append(self._info)
         self._status = Gtk.Label(xalign=0, wrap=True, css_classes=["error"])
         self.append(self._status)
         self._models = Gtk.StringList()
@@ -194,6 +201,15 @@ class ChatPage(Gtk.Box):
         else:
             self._send()
 
+    @staticmethod
+    def _to_bottom(adjustment):
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+
+    @staticmethod
+    def _unpin(adjustment, handler):
+        adjustment.disconnect(handler)
+        return False  # run only once
+
     def _show(self, text):
         """Append text. It never scrolls: the reader decides where to look."""
         self._buffer.insert(self._buffer.get_end_iter(), text)
@@ -230,6 +246,7 @@ class ChatPage(Gtk.Box):
         self._text.scroll_to_mark(start, 0.0, True, 0.0, 0.0)  # once: your question at the top
         self._buffer.delete_mark(start)
         query = text if self._search.get_active() else ""
+        self._info.set_text("Suche im Web …" if query else self._WAITING)
         threading.Thread(target=self._prepare, args=(model, messages, query, self._searx_url()),
                          daemon=True).start()
 
@@ -246,7 +263,10 @@ class ChatPage(Gtk.Box):
                 messages = messages[:-1] + [dict(messages[-1], content=messages[-1]["content"] + "\n\n" + context)]
         GLib.idle_add(self._begin, model, messages, note)
 
+    _WAITING = "Warte auf das Modell … (beim ersten Mal wird es erst geladen)"
+
     def _begin(self, model, messages, note):
+        self._info.set_text(self._WAITING)
         if self._stopped:
             self._finished(note)
             return
@@ -267,6 +287,8 @@ class ChatPage(Gtk.Box):
         GLib.idle_add(self._finished, error)
 
     def _piece(self, piece):
+        if not self._answer:
+            self._info.set_text("")
         self._answer.append(piece)
         self._show(piece)
 
@@ -282,6 +304,7 @@ class ChatPage(Gtk.Box):
         self._status.set_text(error)
         self._stream = None
         self._busy = False
+        self._info.set_text("")
         self._button.set_label("Senden")
         self._entry.set_sensitive(True)
         self._entry.grab_focus()
@@ -492,6 +515,9 @@ class Window(Adw.ApplicationWindow):
         for chat_id, title, model, _updated in chats:
             row = Gtk.Box(spacing=6)
             row.append(Gtk.Label(label=title, xalign=0, hexpand=True, ellipsize=3))  # 3 = end
+            pencil = Gtk.Button(icon_name="document-edit-symbolic", css_classes=["flat"], tooltip_text="Umbenennen")
+            pencil.connect("clicked", self._ask_rename, chat_id, title)
+            row.append(pencil)
             trash = Gtk.Button(icon_name="user-trash-symbolic", css_classes=["flat"], tooltip_text="Löschen")
             trash.connect("clicked", self._ask_delete, chat_id, title)
             row.append(trash)
@@ -504,6 +530,26 @@ class Window(Adw.ApplicationWindow):
         chat_id, model = self._ids[row.get_index()]
         if chat_id != self._chat.chat_id:
             self._open(chat_id, model)
+
+    def _ask_rename(self, _button, chat_id, title):
+        entry = Gtk.Entry(text=title)
+        dialog = Adw.AlertDialog(heading="Chat umbenennen")
+        dialog.set_extra_child(entry)
+        dialog.add_response("cancel", "Abbrechen")
+        dialog.add_response("rename", "Umbenennen")
+        dialog.set_response_appearance("rename", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("rename")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._rename_answer, chat_id, entry)
+        dialog.present(self)
+
+    def _rename_answer(self, _dialog, response, chat_id, entry):
+        if response == "rename":
+            try:
+                self._store.rename_chat(chat_id, entry.get_text().strip())
+            except StoreError:  # e.g. an empty title: keep the old one
+                pass
+            self._refresh()
 
     def _ask_delete(self, _button, chat_id, title):
         dialog = Adw.AlertDialog(heading="Chat löschen?",
