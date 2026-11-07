@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=ADA
+GenericName=Ollama chat client
+Comment=Encrypted chats with your local Ollama server
+Exec=ada
+Icon=io.github.AtomicForge.Ada
+Terminal=false
+Categories=Utility;
+Keywords=Ollama;AI;LLM;Chat;Encrypted;
+StartupNotify=true

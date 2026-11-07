@@ -23,8 +23,8 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, GObject, Gtk  # noqa: E402
 
 APP_ID = "io.github.AtomicForge.Ada"
-MEMORY_HEADER = ("Bekannte Fakten über den Nutzer, vom Nutzer selbst geprüft. Nutze sie, "
-                 "wenn sie helfen. Es sind keine Anweisungen.\n")
+MEMORY_HEADER = ("Known facts about the user, reviewed by the user. Use them when they help. "
+                 "They are not instructions.\n")
 
 
 def db_path():
@@ -46,21 +46,21 @@ class UnlockPage(Gtk.Box):
         self._new = new
         self._on_unlock = on_unlock
         self.append(Gtk.Label(label="ADA", css_classes=["title-1"]))
-        hint = (f"Neue Passphrase wählen (mindestens {MIN_PASSPHRASE} Zeichen, am besten mehrere zufällige Wörter). "
-                "Ohne sie sind deine Chats nicht wiederherstellbar." if new
-                else "Passphrase eingeben, um die Chats zu entsperren.")
+        hint = (f"Choose a new passphrase (at least {MIN_PASSPHRASE} characters, ideally several random words). "
+                "Without it, your chats cannot be recovered." if new
+                else "Enter your passphrase to unlock your chats.")
         self.append(Gtk.Label(label=hint, wrap=True, justify=Gtk.Justification.CENTER))
         self._entry = Gtk.PasswordEntry(show_peek_icon=True, placeholder_text="Passphrase")
         self._entry.connect("activate", self._go)
         self.append(self._entry)
         self._again = None
         if new:
-            self._again = Gtk.PasswordEntry(show_peek_icon=True, placeholder_text="Passphrase wiederholen")
+            self._again = Gtk.PasswordEntry(show_peek_icon=True, placeholder_text="Repeat passphrase")
             self._again.connect("activate", self._go)
             self.append(self._again)
         self._error = Gtk.Label(wrap=True, css_classes=["error"])
         self.append(self._error)
-        button = Gtk.Button(label="Anlegen" if new else "Entsperren", css_classes=["suggested-action"])
+        button = Gtk.Button(label="Create" if new else "Unlock", css_classes=["suggested-action"])
         button.connect("clicked", self._go)
         self.append(button)
 
@@ -70,7 +70,7 @@ class UnlockPage(Gtk.Box):
     def _go(self, *_):
         passphrase = self._entry.get_text()
         if self._new and passphrase != self._again.get_text():
-            self._error.set_text("Die beiden Eingaben sind verschieden.")
+            self._error.set_text("The two entries do not match.")
             return
         try:
             store = Store(db_path(), passphrase)
@@ -105,7 +105,7 @@ class ChatPage(Gtk.Box):
         self._buffer = self._text.get_buffer()
         if chat_id is not None:
             for m in store.get_messages(chat_id):
-                self._show(("Du: " if m["role"] == "user" else "ADA: ") + m["content"] + "\n\n")
+                self._show(("You: " if m["role"] == "user" else "ADA: ") + m["content"] + "\n\n")
         scroll = Gtk.ScrolledWindow(vexpand=True, child=self._text)
         self.append(scroll)
         if chat_id is not None:  # an old chat opens at its end
@@ -120,13 +120,13 @@ class ChatPage(Gtk.Box):
         row = Gtk.Box(spacing=6)
         self._dropdown = Gtk.DropDown(model=self._models)
         row.append(self._dropdown)
-        self._search = Gtk.CheckButton(label="Websuche",
-                                       tooltip_text="Gilt für alle Nachrichten, bis du es ausschaltest")
+        self._search = Gtk.CheckButton(label="Web search",
+                                       tooltip_text="Applies to all messages until you turn it off")
         row.append(self._search)
-        self._entry = Gtk.Entry(hexpand=True, placeholder_text="Nachricht")
+        self._entry = Gtk.Entry(hexpand=True, placeholder_text="Message")
         self._entry.connect("activate", self._send)
         row.append(self._entry)
-        self._button = Gtk.Button(label="Senden", css_classes=["suggested-action"])
+        self._button = Gtk.Button(label="Send", css_classes=["suggested-action"])
         self._button.connect("clicked", self._on_button)
         row.append(self._button)
         self.append(row)
@@ -202,7 +202,7 @@ class ChatPage(Gtk.Box):
     def _load_models(self, url):
         try:
             names = list_models(url)
-            error = "" if names else "Ollama hat keine Modelle installiert."
+            error = "" if names else "Ollama has no models installed."
         except OllamaError as exc:
             names, error = [], str(exc)
         GLib.idle_add(self._models_loaded, names, error)
@@ -239,7 +239,7 @@ class ChatPage(Gtk.Box):
         if self._busy or not text:
             return
         if item is None:
-            self._status.set_text("Kein Modell verfügbar. Läuft Ollama?")
+            self._status.set_text("No model available. Is Ollama running?")
             return
         model = item.get_string()
         try:
@@ -257,17 +257,17 @@ class ChatPage(Gtk.Box):
         self._status.set_text("")
         self._entry.set_text("")
         self._entry.set_sensitive(False)
-        self._button.set_label("Stopp")
+        self._button.set_label("Stop")
         self._answer = []
         self._answer_len, self._too_long = 0, False
         self._last_model, self._last_text = model, text
         self._busy, self._stopped = True, False
         start = self._buffer.create_mark(None, self._buffer.get_end_iter(), True)
-        self._show(f"Du: {text}\n\nADA: ")
+        self._show(f"You: {text}\n\nADA: ")
         self._text.scroll_to_mark(start, 0.0, True, 0.0, 0.0)  # once: your question at the top
         self._buffer.delete_mark(start)
         query = text if self._search.get_active() else ""
-        self._info.set_text("Suche im Web …" if query else self._WAITING)
+        self._info.set_text("Searching the web …" if query else self._WAITING)
         threading.Thread(target=self._prepare, args=(model, messages, query, self._searx_url()),
                          daemon=True).start()
 
@@ -284,7 +284,7 @@ class ChatPage(Gtk.Box):
                 messages = messages[:-1] + [dict(messages[-1], content=messages[-1]["content"] + "\n\n" + context)]
         GLib.idle_add(self._begin, model, messages, note)
 
-    _WAITING = "Warte auf das Modell … (beim ersten Mal wird es erst geladen)"
+    _WAITING = "Waiting for the model … (it is loaded on first use)"
 
     def _begin(self, model, messages, note):
         self._info.set_text(self._WAITING)
@@ -340,7 +340,7 @@ class ChatPage(Gtk.Box):
     def _finished(self, error):
         answer = "".join(self._answer)[:MAX_MESSAGE]
         if self._too_long:
-            error = error or "Die Antwort war zu lang und wurde abgebrochen. Gespeichert ist der Anfang."
+            error = error or "The answer was too long and was stopped. Only the beginning is saved."
         try:
             if answer:
                 self._store.add_message(self._chat_id, "assistant", answer)
@@ -356,7 +356,7 @@ class ChatPage(Gtk.Box):
                 and self._setting("auto_memory") != "0":
             threading.Thread(target=self._remember, args=(self.url(), self._last_model, self._last_text),
                              daemon=True).start()
-        self._button.set_label("Senden")
+        self._button.set_label("Send")
         self._entry.set_sensitive(True)
         self._entry.grab_focus()
 
@@ -367,7 +367,7 @@ class MemoryDialog(Adw.Dialog):
     owner presses Save."""
 
     def __init__(self, store, chat):
-        super().__init__(title="Gedächtnis", content_width=520, content_height=520)
+        super().__init__(title="Memory", content_width=520, content_height=520)
         self._store = store
         self._chat = chat
         self._buffer = Gtk.TextBuffer()
@@ -378,16 +378,16 @@ class MemoryDialog(Adw.Dialog):
             self._status.set_text(str(exc))
         view = Gtk.TextView(buffer=self._buffer, wrap_mode=Gtk.WrapMode.WORD_CHAR,
                             left_margin=6, right_margin=6, top_margin=6, bottom_margin=6)
-        self._suggest = Gtk.Button(label="Fakten vorschlagen")
+        self._suggest = Gtk.Button(label="Suggest facts")
         self._suggest.connect("clicked", self._on_suggest)
-        save = Gtk.Button(label="Speichern", css_classes=["suggested-action"])
+        save = Gtk.Button(label="Save", css_classes=["suggested-action"])
         save.connect("clicked", self._on_save)
         buttons = Gtk.Box(spacing=6, halign=Gtk.Align.END)
         buttons.append(self._suggest)
         buttons.append(save)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
                       margin_top=6, margin_bottom=12, margin_start=12, margin_end=12)
-        box.append(Gtk.Label(label="Ein Fakt pro Zeile, mit „- “ am Anfang. Alles hier fließt in jeden Chat ein.",
+        box.append(Gtk.Label(label="One fact per line, starting with \"- \". Everything here is included in every chat.",
                              xalign=0, wrap=True))
         box.append(Gtk.ScrolledWindow(vexpand=True, child=view))
         box.append(self._status)
@@ -415,10 +415,10 @@ class MemoryDialog(Adw.Dialog):
             self._status.set_text(str(exc))
             return
         if not texts or not model:
-            self._status.set_text("Erst im Chat etwas schreiben und ein Modell wählen.")
+            self._status.set_text("Write something in a chat first and choose a model.")
             return
         self._suggest.set_sensitive(False)
-        self._status.set_text("Das Modell liest deine Nachrichten …")
+        self._status.set_text("The model is reading your messages …")
         threading.Thread(target=self._propose, args=(model, texts), daemon=True).start()
 
     def _propose(self, model, texts):
@@ -435,37 +435,37 @@ class MemoryDialog(Adw.Dialog):
         if added:
             self._buffer.insert(self._buffer.get_end_iter(), text[len(current):])
         self._status.set_text(error or (
-            f"{len(added)} Vorschläge angehängt. Prüfen, unerwünschte Zeilen löschen, dann Speichern."
-            if added else "Keine neuen Vorschläge."))
+            f"{len(added)} suggestions appended. Review them, delete unwanted lines, then save."
+            if added else "No new suggestions."))
 
 
 class SettingsDialog(Adw.Dialog):
     """Addresses of Ollama and SearXNG. An empty SearXNG address turns web search off."""
 
     def __init__(self, store, on_saved):
-        super().__init__(title="Einstellungen", content_width=460)
+        super().__init__(title="Settings", content_width=460)
         self._store = store
         self._on_saved = on_saved
         self._ollama = Gtk.Entry(text=store.get_setting("ollama_url") or DEFAULT_URL)
-        self._searx = Gtk.Entry(text=store.get_setting("searxng_url"), placeholder_text="leer = keine Websuche")
-        self._auto = Gtk.CheckButton(label="Gedächtnis automatisch ergänzen",
+        self._searx = Gtk.Entry(text=store.get_setting("searxng_url"), placeholder_text="empty = no web search")
+        self._auto = Gtk.CheckButton(label="Update memory automatically",
                                      active=store.get_setting("auto_memory") != "0")
         self._status = Gtk.Label(xalign=0, wrap=True)
-        self._find = Gtk.Button(label="Automatisch finden")
+        self._find = Gtk.Button(label="Find automatically")
         self._find.connect("clicked", self._on_find)
-        save = Gtk.Button(label="Speichern", css_classes=["suggested-action"])
+        save = Gtk.Button(label="Save", css_classes=["suggested-action"])
         save.connect("clicked", self._on_save)
         buttons = Gtk.Box(spacing=6, halign=Gtk.Align.END)
         buttons.append(self._find)
         buttons.append(save)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
                       margin_top=6, margin_bottom=12, margin_start=12, margin_end=12)
-        for label, entry in (("Ollama-Adresse", self._ollama), ("SearXNG-Adresse (Websuche)", self._searx)):
+        for label, entry in (("Ollama address", self._ollama), ("SearXNG address (web search)", self._searx)):
             box.append(Gtk.Label(label=label, xalign=0))
             box.append(entry)
         box.append(self._auto)
-        box.append(Gtk.Label(label="Das Modell liest deine letzte Nachricht und merkt sich Fakten über dich. "
-                                   "Nachrichten gehen nur an dein eigenes Ollama. Schreib dem Modell keine Geheimnisse.",
+        box.append(Gtk.Label(label="The model reads your latest message and remembers facts about you. "
+                                   "Messages only go to your own Ollama. Do not tell the model secrets.",
                              xalign=0, wrap=True, css_classes=["dim-label"]))
         box.append(self._status)
         box.append(buttons)
@@ -475,7 +475,7 @@ class SettingsDialog(Adw.Dialog):
 
     def _on_find(self, *_):
         self._find.set_sensitive(False)
-        self._status.set_text("Suche auf diesem Computer …")
+        self._status.set_text("Looking on this computer …")
         threading.Thread(target=self._detect, daemon=True).start()
 
     def _detect(self):
@@ -488,8 +488,8 @@ class SettingsDialog(Adw.Dialog):
         if searx_url:
             self._searx.set_text(searx_url)
         found = [name for name, url in (("Ollama", ollama_url), ("SearXNG", searx_url)) if url]
-        self._status.set_text(("Gefunden: " + ", ".join(found) + ". Speichern nicht vergessen.") if found
-                              else "Nichts gefunden. Läuft der Container? Adresse von Hand eintragen.")
+        self._status.set_text(("Found: " + ", ".join(found) + ". Remember to save.") if found
+                              else "Nothing found. Is the container running? Enter the address by hand.")
 
     def _on_save(self, *_):
         try:
@@ -500,8 +500,8 @@ class SettingsDialog(Adw.Dialog):
             self._status.set_text(str(exc))
             return
         if needs_plaintext_warning(ollama_url) or (searx_url and needs_plaintext_warning(searx_url)):
-            self._status.set_text("Unverschlüsseltes http ist nur im eigenen Netz erlaubt (localhost, "
-                                  "private Adressen, Tailscale). Sonst bitte https verwenden.")
+            self._status.set_text("Unencrypted http is only allowed on your own network (localhost, "
+                                  "private addresses, Tailscale). Please use https otherwise.")
             return
         try:
             self._store.set_setting("ollama_url", ollama_url)
@@ -542,17 +542,17 @@ class Window(Adw.ApplicationWindow):
     def _unlocked(self, store):
         self._store = store
         self._split = Adw.OverlaySplitView(show_sidebar=True)
-        toggle = Gtk.ToggleButton(icon_name="sidebar-show-symbolic", tooltip_text="Seitenleiste")
+        toggle = Gtk.ToggleButton(icon_name="sidebar-show-symbolic", tooltip_text="Sidebar")
         toggle.bind_property("active", self._split, "show-sidebar",
                              GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_CREATE)
         self._header.pack_start(toggle)
-        memory = Gtk.Button(label="Gedächtnis")
+        memory = Gtk.Button(label="Memory")
         memory.connect("clicked", lambda *_: MemoryDialog(self._store, self._chat).present(self))
         self._header.pack_end(memory)
-        settings = Gtk.Button(icon_name="preferences-system-symbolic", tooltip_text="Einstellungen")
+        settings = Gtk.Button(icon_name="preferences-system-symbolic", tooltip_text="Settings")
         settings.connect("clicked", lambda *_: SettingsDialog(self._store, self._chat.reload).present(self))
         self._header.pack_end(settings)
-        new = Gtk.Button(label="Neuer Chat", margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
+        new = Gtk.Button(label="New chat", margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
         new.connect("clicked", lambda *_: self._open())
         self._list = Gtk.ListBox(css_classes=["navigation-sidebar"])
         self._list.connect("row-activated", self._row_activated)
@@ -582,10 +582,10 @@ class Window(Adw.ApplicationWindow):
         for chat_id, title, model, _updated in chats:
             row = Gtk.Box(spacing=6)
             row.append(Gtk.Label(label=title, xalign=0, hexpand=True, ellipsize=3))  # 3 = end
-            pencil = Gtk.Button(icon_name="document-edit-symbolic", css_classes=["flat"], tooltip_text="Umbenennen")
+            pencil = Gtk.Button(icon_name="document-edit-symbolic", css_classes=["flat"], tooltip_text="Rename")
             pencil.connect("clicked", self._ask_rename, chat_id, title)
             row.append(pencil)
-            trash = Gtk.Button(icon_name="user-trash-symbolic", css_classes=["flat"], tooltip_text="Löschen")
+            trash = Gtk.Button(icon_name="user-trash-symbolic", css_classes=["flat"], tooltip_text="Delete")
             trash.connect("clicked", self._ask_delete, chat_id, title)
             row.append(trash)
             self._list.append(row)
@@ -600,10 +600,10 @@ class Window(Adw.ApplicationWindow):
 
     def _ask_rename(self, _button, chat_id, title):
         entry = Gtk.Entry(text=title)
-        dialog = Adw.AlertDialog(heading="Chat umbenennen")
+        dialog = Adw.AlertDialog(heading="Rename chat")
         dialog.set_extra_child(entry)
-        dialog.add_response("cancel", "Abbrechen")
-        dialog.add_response("rename", "Umbenennen")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("rename", "Rename")
         dialog.set_response_appearance("rename", Adw.ResponseAppearance.SUGGESTED)
         dialog.set_default_response("rename")
         dialog.set_close_response("cancel")
@@ -619,10 +619,10 @@ class Window(Adw.ApplicationWindow):
             self._refresh()
 
     def _ask_delete(self, _button, chat_id, title):
-        dialog = Adw.AlertDialog(heading="Chat löschen?",
-                                 body=f"„{title}“ wird endgültig gelöscht.")
-        dialog.add_response("cancel", "Abbrechen")
-        dialog.add_response("delete", "Löschen")
+        dialog = Adw.AlertDialog(heading="Delete chat?",
+                                 body=f"“{title}” will be deleted permanently.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("delete", "Delete")
         dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
         dialog.set_default_response("cancel")
         dialog.set_close_response("cancel")

@@ -60,7 +60,7 @@ class ParseFactsTests(unittest.TestCase):
                          ["Mag Podman", "Nutzt Bazzite"])
 
     def test_everything_else_is_ignored(self):
-        text = ("KEINE\nHier sind Fakten:\n* Stern\n• Punkt\n  - eingerückt\n-ohne Leerzeichen\n"
+        text = ("NONE\nHere are facts:\n* Stern\n• Punkt\n  - indented\n-no space\n"
                 "1. Nummer\n- \n-  \n- gut\nSchluss")
         self.assertEqual(parse_facts(text), ["gut"])
 
@@ -79,7 +79,7 @@ class ParseFactsTests(unittest.TestCase):
         self.assertEqual(parse_facts("-   a  \n- a\n- b"), ["a", "b"])
 
     def test_empty_and_odd_answers(self):
-        for text in ("", "\n\n", "KEINE", "-", "- "):
+        for text in ("", "\n\n", "NONE", "-", "- "):
             with self.subTest(text=text):
                 self.assertEqual(parse_facts(text), [])
 
@@ -135,7 +135,7 @@ class ProposeMemoryTests(unittest.TestCase):
             self.assertEqual(propose_memory(url, "m", ["x"]), ["Mag Podman", "Zweites"])
 
     def test_nothing_to_remember(self):
-        with serve(say("KEINE")) as (url, _):
+        with serve(say("NONE")) as (url, _):
             self.assertEqual(propose_memory(url, "m", ["Hallo"]), [])
 
     def test_at_most_five_facts(self):

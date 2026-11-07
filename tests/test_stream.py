@@ -369,7 +369,7 @@ class StreamErrorTests(unittest.TestCase):
             parts, error = collect(stream_of(url, idle_timeout=0.3))
             elapsed = time.monotonic() - started
         self.assertEqual(parts, ["Hi"])
-        self.assertIn("Zeitüberschreitung", str(error))
+        self.assertIn("Timed out", str(error))
         self.assertLess(elapsed, 1.5)
 
     def test_silence_before_the_answer_times_out(self):
@@ -387,7 +387,7 @@ class StreamErrorTests(unittest.TestCase):
             port = sock.getsockname()[1]
         # the socket is closed now, so nobody listens on this port
         _, error = collect(stream_of(f"http://127.0.0.1:{port}", connect_timeout=2))
-        self.assertIn("nicht erreichbar", str(error))
+        self.assertIn("not reachable", str(error))
 
     def test_bad_input_is_rejected_at_once(self):
         good = "http://localhost:11434"

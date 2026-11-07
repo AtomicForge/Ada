@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.AtomicForge.Ada</id>
+  <name>ADA</name>
+  <summary>Encrypted chat client for your local Ollama server</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="io.github.atomicforge">
+    <name>AtomicForge</name>
+  </developer>
+  <description>
+    <p>ADA is a small, native chat app for your own Ollama server. Chats and a persistent memory are stored in one database that is encrypted with SQLCipher. You enter the passphrase at every start, and it is never saved.</p>
+    <p>Features:</p>
+    <ul>
+      <li>Chats with live streaming answers and a stop button</li>
+      <li>A memory that carries notes about you across all chats; you can read and edit it at any time</li>
+      <li>Optional web search through your own SearXNG server</li>
+      <li>Automatic detection of Ollama and SearXNG on this computer</li>
+    </ul>
+    <p>ADA is experimental and has not been audited. If you forget the passphrase, your data cannot be recovered. Model answers are shown as plain text. ADA needs a running Ollama server; it does not include one.</p>
+  </description>
+  <launchable type="desktop-id">io.github.AtomicForge.Ada.desktop</launchable>
+  <url type="homepage">https://github.com/AtomicForge/Ada</url>
+  <url type="bugtracker">https://github.com/AtomicForge/Ada/issues</url>
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <keywords>
+    <keyword>Ollama</keyword>
+    <keyword>AI</keyword>
+    <keyword>Chat</keyword>
+  </keywords>
+  <content_rating type="oars-1.1"/>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <releases>
+    <release version="0.1.0" date="2026-11-07"/>
+  </releases>
+</component>

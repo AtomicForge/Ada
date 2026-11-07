@@ -24,13 +24,13 @@ SETTINGS = ("ollama_url", "searxng_url", "web_search", "auto_memory")  # the onl
 MAX_SETTING = 500
 _SCHEMA_VERSION = 1
 
-_MSG_NO_CIPHER = "SQLCipher fehlt oder ist nicht aktiv. ADA speichert nichts unverschlüsselt."
-_MSG_BAD_PASSPHRASE = f"Die Passphrase muss {MIN_PASSPHRASE} bis {MAX_PASSPHRASE} Zeichen lang sein."
-_MSG_RAW_KEY = "Die Passphrase darf nicht mit x' beginnen (SQLCipher würde sie als fertigen Schlüssel lesen)."
-_MSG_FILE = "Die Datenbankdatei kann nicht angelegt oder geschützt werden. Rechte und Speicherplatz prüfen."
-_MSG_WRONG = "Falsche Passphrase, oder die Datei ist keine ADA-Datenbank."
-_MSG_CLOSED = "Die Datenbank ist geschlossen."
-_MSG_BAD_DATA = "Ungültige Daten."
+_MSG_NO_CIPHER = "SQLCipher is missing or not active. ADA does not store anything unencrypted."
+_MSG_BAD_PASSPHRASE = f"The passphrase must be {MIN_PASSPHRASE} to {MAX_PASSPHRASE} characters long."
+_MSG_RAW_KEY = "The passphrase must not start with x' (SQLCipher would read it as a ready-made key)."
+_MSG_FILE = "The database file cannot be created or protected. Check permissions and free space."
+_MSG_WRONG = "Wrong passphrase, or the file is not an ADA database."
+_MSG_CLOSED = "The database is closed."
+_MSG_BAD_DATA = "Invalid data."
 
 _SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);

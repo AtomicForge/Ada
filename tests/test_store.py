@@ -139,7 +139,7 @@ class OpenTests(Base):
         self.open().close()
         with self.assertRaises(StoreError) as cm:
             Store(self.path, "falsche-passphrase")
-        self.assertIn("Falsche Passphrase", str(cm.exception))
+        self.assertIn("Wrong passphrase", str(cm.exception))
         self.open().close()  # the right one still works, the file is unharmed
 
     @unittest.skipUnless(REAL, "real SQLCipher needed")
