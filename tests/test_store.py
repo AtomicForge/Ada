@@ -43,7 +43,9 @@ class OpenTests(Base):
         self.assertEqual(s.get_memory(), "- Mag Podman")
 
     def test_bad_passphrases_are_refused_and_no_file_is_made(self):
-        for bad in ("", "kurz", "x" * 1001, "abc\x00defghij", None, 12345678, b"password1"):
+        raw = "x'" + "0" * 64 + "'"
+        for bad in ("", "kurz", "a" * 11, "x" * 1001, "abc\x00defghijkl", None, 12345678, b"password1234",
+                    raw, raw.upper(), "x'" + "ab" * 48 + "'", "\ud800" * 12):
             with self.subTest(bad=str(bad)[:10]):
                 with self.assertRaises(StoreError):
                     Store(self.path, bad)
@@ -69,6 +71,61 @@ class OpenTests(Base):
             with self.assertRaises(StoreError):
                 Store(self.path, PASS)
         self.assertFalse(os.path.exists(self.path))
+
+    def test_twelve_characters_are_enough_and_x_inside_is_fine(self):
+        self.open("a" * 12).close()
+        os.remove(self.path)
+        self.open("my x'key is fine").close()
+
+    def test_empty_file_from_an_interrupted_start_is_used_again(self):
+        open(self.path, "wb").close()
+        s = self.open()
+        s.set_memory("ok")
+        self.assertEqual(s.get_memory(), "ok")
+
+    def test_old_file_rights_are_tightened(self):
+        self.open().close()
+        os.chmod(self.path, 0o644)
+        self.open().close()
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+
+    def test_unusable_location_gives_a_store_error(self):
+        with self.assertRaises(StoreError):
+            Store(os.path.join(self.dir.name, "missing-folder", "ada.db"), PASS)
+
+    def test_incomplete_databases_are_refused_and_kept(self):
+        import sqlite3
+        c = sqlite3.connect(self.path)  # right schema marker, nothing else
+        c.execute("create table meta (key text primary key, value text)")
+        c.execute("insert into meta values ('schema', '1')")
+        c.commit()
+        c.close()
+        before = open(self.path, "rb").read()
+        with self.assertRaises(StoreError):
+            Store(self.path, PASS)
+        self.assertEqual(open(self.path, "rb").read(), before)
+
+    def test_missing_chat_tables_are_refused(self):
+        import sqlite3
+        c = sqlite3.connect(self.path)  # marker and memory are there, chats and messages are not
+        c.execute("create table meta (key text primary key, value text)")
+        c.execute("insert into meta values ('schema', '1')")
+        c.execute("create table memory (id integer primary key, text text)")
+        c.execute("insert into memory values (1, '')")
+        c.commit()
+        c.close()
+        with self.assertRaises(StoreError):
+            Store(self.path, PASS)
+
+    def test_missing_memory_row_is_refused(self):
+        s = self.open()
+        s._run("DELETE FROM memory", write=True)
+        s.close()
+        with self.assertRaises(StoreError):
+            Store(self.path, PASS)
+
+    def test_temp_files_stay_in_memory(self):
+        self.assertEqual(self.open()._run("PRAGMA temp_store", one=True)[0][0], 2)
 
     def test_passphrase_with_quotes_works(self):
         tricky = "it's \"quoted\"; -- x"
@@ -153,6 +210,14 @@ class ChatTests(Base):
         self.assertEqual(s.list_chats(), [])
         self.assertEqual(s.get_messages(c), [])
         self.assertEqual(s._run("SELECT count(*) FROM messages", one=True)[0][0], 0)
+
+    def test_message_and_timestamp_are_saved_together(self):
+        s = self.open()
+        c = s.create_chat("T", "m")
+        s._run("CREATE TRIGGER no_update BEFORE UPDATE ON chats BEGIN SELECT RAISE(ABORT, 'x'); END", write=True)
+        with self.assertRaises(StoreError):
+            s.add_message(c, "user", "x")
+        self.assertEqual(s.get_messages(c), [])  # nothing half-done
 
     def test_message_for_missing_chat_is_refused(self):
         with self.assertRaises(StoreError):

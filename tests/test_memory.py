@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from unittest import mock
 
 from ada import ollama
-from ada.ollama import OllamaError, parse_facts, propose_memory
+from ada.ollama import OllamaError, merge_facts, parse_facts, propose_memory
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -82,6 +82,38 @@ class ParseFactsTests(unittest.TestCase):
         for text in ("", "\n\n", "KEINE", "-", "- "):
             with self.subTest(text=text):
                 self.assertEqual(parse_facts(text), [])
+
+
+class MergeFactsTests(unittest.TestCase):
+    def test_new_facts_are_appended_and_old_text_is_kept(self):
+        text, added = merge_facts("# Meine Notizen\n- a\n", ["b", "c"], 1000)
+        self.assertEqual(text, "# Meine Notizen\n- a\n- b\n- c\n")
+        self.assertEqual(added, ["b", "c"])
+
+    def test_known_facts_are_skipped_even_with_other_spacing(self):
+        text, added = merge_facts("- a\n-   b  \nfrei: c", ["a", "b", "c", "d"], 1000)
+        self.assertEqual(added, ["c", "d"])  # "c" is only free text, not a fact line
+        self.assertEqual(text, "- a\n-   b  \nfrei: c\n- c\n- d\n")
+
+    def test_line_break_is_added_when_the_text_does_not_end_with_one(self):
+        self.assertEqual(merge_facts("- a", ["b"], 1000)[0], "- a\n- b\n")
+        self.assertEqual(merge_facts("", ["b"], 1000)[0], "- b\n")
+
+    def test_the_limit_is_never_exceeded_and_nothing_is_cut(self):
+        text, added = merge_facts("- a\n", ["b" * 10, "c", "d" * 10], 12)
+        self.assertEqual((text, added), ("- a\n- c\n", ["c"]))
+        self.assertLessEqual(len(text), 12)
+        self.assertEqual(merge_facts("x" * 20, ["a"], 10), ("x" * 20, []))
+
+    def test_only_lines_with_dash_and_space_count_as_known_facts(self):
+        self.assertEqual(merge_facts("-ab\n", ["b"], 1000)[1], ["b"])
+
+    def test_nothing_to_add(self):
+        self.assertEqual(merge_facts("- a\n", [], 1000), ("- a\n", []))
+        self.assertEqual(merge_facts("- a\n", ["a"], 1000), ("- a\n", []))
+
+    def test_repeated_facts_in_one_call_are_added_once(self):
+        self.assertEqual(merge_facts("", ["a", "a"], 1000), ("- a\n", ["a"]))
 
 
 class ProposeMemoryTests(unittest.TestCase):

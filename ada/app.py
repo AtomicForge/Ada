@@ -10,17 +10,17 @@ import threading
 
 # ada.store must be imported BEFORE gi: once GTK has loaded the system's plain
 # SQLite library, sqlcipher3 would silently use it and encrypt nothing.
-from ada.store import MIN_PASSPHRASE, Store, StoreError  # isort: skip
+from ada.store import MAX_MEMORY, MAX_MESSAGE, MIN_PASSPHRASE, Store, StoreError  # isort: skip
 from ada.detect import find_ollama, find_searxng  # isort: skip
 from ada.ollama import (DEFAULT_URL, ChatStream, OllamaError, list_models,  # isort: skip
-                        needs_plaintext_warning, propose_memory, validate_url)
+                        merge_facts, needs_plaintext_warning, propose_memory, validate_url)
 from ada.searxng import SearxError, build_context, search  # isort: skip
 
 import gi  # noqa: E402
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, GLib, GObject, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, GLib, GObject, Gtk  # noqa: E402
 
 APP_ID = "io.github.AtomicForge.Ada"
 MEMORY_HEADER = ("Bekannte Fakten über den Nutzer, vom Nutzer selbst geprüft. Nutze sie, "
@@ -30,6 +30,10 @@ MEMORY_HEADER = ("Bekannte Fakten über den Nutzer, vom Nutzer selbst geprüft. 
 def db_path():
     folder = os.path.join(GLib.get_user_data_dir(), "ada")
     os.makedirs(folder, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(folder, 0o700)  # also for a folder that already existed
+    except OSError:
+        pass
     return os.path.join(folder, "ada.db")
 
 
@@ -42,7 +46,7 @@ class UnlockPage(Gtk.Box):
         self._new = new
         self._on_unlock = on_unlock
         self.append(Gtk.Label(label="ADA", css_classes=["title-1"]))
-        hint = (f"Neue Passphrase wählen (mindestens {MIN_PASSPHRASE} Zeichen). "
+        hint = (f"Neue Passphrase wählen (mindestens {MIN_PASSPHRASE} Zeichen, am besten mehrere zufällige Wörter). "
                 "Ohne sie sind deine Chats nicht wiederherstellbar." if new
                 else "Passphrase eingeben, um die Chats zu entsperren.")
         self.append(Gtk.Label(label=hint, wrap=True, justify=Gtk.Justification.CENTER))
@@ -94,6 +98,8 @@ class ChatPage(Gtk.Box):
         self._busy = False  # from sending until the answer is finished
         self._stopped = False
         self._answer = []
+        self._answer_len, self._too_long = 0, False
+        self._last_model, self._last_text = None, ""
         self._text = Gtk.TextView(editable=False, cursor_visible=False, left_margin=6, right_margin=6,
                                   wrap_mode=Gtk.WrapMode.WORD_CHAR)
         self._buffer = self._text.get_buffer()
@@ -140,6 +146,19 @@ class ChatPage(Gtk.Box):
             self._store.set_setting("web_search", "1" if button.get_active() else "")
         except StoreError:
             pass
+
+    def focus_input(self):
+        self._entry.grab_focus_without_selecting()
+
+    def type_char(self, code):
+        """A key was pressed while the input line was not in focus: move the
+        character there, so the owner can simply start typing."""
+        if self._busy or code == 0 or not chr(code).isprintable():
+            return False
+        self.focus_input()
+        self._entry.set_text(self._entry.get_text() + chr(code))
+        self._entry.set_position(-1)
+        return True
 
     @property
     def chat_id(self):
@@ -240,6 +259,8 @@ class ChatPage(Gtk.Box):
         self._entry.set_sensitive(False)
         self._button.set_label("Stopp")
         self._answer = []
+        self._answer_len, self._too_long = 0, False
+        self._last_model, self._last_text = model, text
         self._busy, self._stopped = True, False
         start = self._buffer.create_mark(None, self._buffer.get_end_iter(), True)
         self._show(f"Du: {text}\n\nADA: ")
@@ -286,14 +307,40 @@ class ChatPage(Gtk.Box):
             error = str(exc)
         GLib.idle_add(self._finished, error)
 
+    def _remember(self, url, model, text):
+        """Background: ask for facts in the owner's newest message only, then save new ones."""
+        try:
+            facts = propose_memory(url, model, [text])
+        except OllamaError:
+            return  # no memory update this time; nothing else is lost
+        GLib.idle_add(self._remembered, facts)
+
+    def _remembered(self, facts):
+        try:
+            text, added = merge_facts(self._store.get_memory(), facts, MAX_MEMORY)
+            if added:
+                self._store.set_memory(text)
+        except StoreError:
+            return
+        if added and not self._busy:
+            self._info.set_text("Gemerkt: " + "; ".join(added))
+
     def _piece(self, piece):
+        if self._too_long:
+            return
         if not self._answer:
             self._info.set_text("")
         self._answer.append(piece)
+        self._answer_len += len(piece)
         self._show(piece)
+        if self._answer_len > MAX_MESSAGE:  # more than the database accepts: stop here
+            self._too_long = True
+            self.stop()
 
     def _finished(self, error):
-        answer = "".join(self._answer)
+        answer = "".join(self._answer)[:MAX_MESSAGE]
+        if self._too_long:
+            error = error or "Die Antwort war zu lang und wurde abgebrochen. Gespeichert ist der Anfang."
         try:
             if answer:
                 self._store.add_message(self._chat_id, "assistant", answer)
@@ -305,6 +352,10 @@ class ChatPage(Gtk.Box):
         self._stream = None
         self._busy = False
         self._info.set_text("")
+        if answer and not error and not self._stopped and len(self._last_text) >= 20 \
+                and self._setting("auto_memory") != "0":
+            threading.Thread(target=self._remember, args=(self.url(), self._last_model, self._last_text),
+                             daemon=True).start()
         self._button.set_label("Senden")
         self._entry.set_sensitive(True)
         self._entry.grab_focus()
@@ -379,15 +430,13 @@ class MemoryDialog(Adw.Dialog):
 
     def _proposed(self, facts, error):
         self._suggest.set_sensitive(True)
-        known = {line[2:].strip() for line in self._text().split("\n") if line.startswith("- ")}
-        new = [f for f in facts if f not in known]
-        if new:
-            text = self._text()
-            sep = "" if not text or text.endswith("\n") else "\n"
-            self._buffer.insert(self._buffer.get_end_iter(), sep + "".join(f"- {f}\n" for f in new))
+        current = self._text()
+        text, added = merge_facts(current, facts, MAX_MEMORY)
+        if added:
+            self._buffer.insert(self._buffer.get_end_iter(), text[len(current):])
         self._status.set_text(error or (
-            f"{len(new)} Vorschläge angehängt. Prüfen, unerwünschte Zeilen löschen, dann Speichern."
-            if new else "Keine neuen Vorschläge."))
+            f"{len(added)} Vorschläge angehängt. Prüfen, unerwünschte Zeilen löschen, dann Speichern."
+            if added else "Keine neuen Vorschläge."))
 
 
 class SettingsDialog(Adw.Dialog):
@@ -399,6 +448,8 @@ class SettingsDialog(Adw.Dialog):
         self._on_saved = on_saved
         self._ollama = Gtk.Entry(text=store.get_setting("ollama_url") or DEFAULT_URL)
         self._searx = Gtk.Entry(text=store.get_setting("searxng_url"), placeholder_text="leer = keine Websuche")
+        self._auto = Gtk.CheckButton(label="Gedächtnis automatisch ergänzen",
+                                     active=store.get_setting("auto_memory") != "0")
         self._status = Gtk.Label(xalign=0, wrap=True)
         self._find = Gtk.Button(label="Automatisch finden")
         self._find.connect("clicked", self._on_find)
@@ -412,6 +463,10 @@ class SettingsDialog(Adw.Dialog):
         for label, entry in (("Ollama-Adresse", self._ollama), ("SearXNG-Adresse (Websuche)", self._searx)):
             box.append(Gtk.Label(label=label, xalign=0))
             box.append(entry)
+        box.append(self._auto)
+        box.append(Gtk.Label(label="Das Modell liest deine letzte Nachricht und merkt sich Fakten über dich. "
+                                   "Nachrichten gehen nur an dein eigenes Ollama. Schreib dem Modell keine Geheimnisse.",
+                             xalign=0, wrap=True, css_classes=["dim-label"]))
         box.append(self._status)
         box.append(buttons)
         toolbar = Adw.ToolbarView(content=box)
@@ -451,6 +506,7 @@ class SettingsDialog(Adw.Dialog):
         try:
             self._store.set_setting("ollama_url", ollama_url)
             self._store.set_setting("searxng_url", searx_url)
+            self._store.set_setting("auto_memory", "1" if self._auto.get_active() else "0")
         except StoreError as exc:
             self._status.set_text(str(exc))
             return
@@ -472,6 +528,16 @@ class Window(Adw.ApplicationWindow):
         self._view.set_content(page)
         page.focus_first()
         self.connect("close-request", self._on_close)
+        keys = Gtk.EventControllerKey()  # sees keys that no focused widget used
+        keys.connect("key-pressed", self._on_key)
+        self.add_controller(keys)
+
+    def _on_key(self, _controller, keyval, _code, state):
+        blocked = (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK
+                   | Gdk.ModifierType.META_MASK | Gdk.ModifierType.SUPER_MASK)
+        if not self._chat or self.get_visible_dialog() is not None or state & blocked:
+            return False
+        return self._chat.type_char(Gdk.keyval_to_unicode(keyval))
 
     def _unlocked(self, store):
         self._store = store
@@ -503,6 +569,7 @@ class Window(Adw.ApplicationWindow):
         self._chat = ChatPage(self._store, self._refresh, chat_id, model)
         self._split.set_content(self._chat)
         self._refresh()
+        GLib.idle_add(self._chat.focus_input)  # ready to type
 
     def _refresh(self):
         """Rebuild the chat list; the open chat is highlighted."""

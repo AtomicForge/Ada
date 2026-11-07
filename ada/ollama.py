@@ -354,6 +354,23 @@ def parse_facts(text):
     return facts
 
 
+def merge_facts(memory, facts, limit):
+    """Append facts that are not in the memory text yet, one "- fact" line each,
+    as long as the text stays within `limit`. Returns (new_text, added_facts).
+    Existing text is never changed."""
+    known = {line[2:].strip() for line in memory.split("\n") if line.startswith("- ")}
+    text, added = memory, []
+    for fact in facts:
+        line = f"- {fact}\n"
+        sep = "" if not text or text.endswith("\n") else "\n"
+        if fact in known or len(text) + len(sep) + len(line) > limit:
+            continue
+        text += sep + line
+        known.add(fact)
+        added.append(fact)
+    return text, added
+
+
 def propose_memory(base_url, model, user_texts, idle_timeout=60.0):
     """Ask the model which facts about the owner are worth remembering.
 

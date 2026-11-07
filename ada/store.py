@@ -14,18 +14,20 @@ try:
 except ImportError:  # pragma: no cover
     _db = None
 
-MIN_PASSPHRASE = 8
+MIN_PASSPHRASE = 12
 MAX_PASSPHRASE = 1000
 MAX_TITLE = 200
 MAX_MESSAGE = 1024 * 1024
 MAX_MEMORY = 20000
 ROLES = ("user", "assistant", "system")
-SETTINGS = ("ollama_url", "searxng_url", "web_search")  # the only settings; stored in meta as "setting:<name>"
+SETTINGS = ("ollama_url", "searxng_url", "web_search", "auto_memory")  # the only settings; stored in meta as "setting:<name>"
 MAX_SETTING = 500
 _SCHEMA_VERSION = 1
 
 _MSG_NO_CIPHER = "SQLCipher fehlt oder ist nicht aktiv. ADA speichert nichts unverschlüsselt."
 _MSG_BAD_PASSPHRASE = f"Die Passphrase muss {MIN_PASSPHRASE} bis {MAX_PASSPHRASE} Zeichen lang sein."
+_MSG_RAW_KEY = "Die Passphrase darf nicht mit x' beginnen (SQLCipher würde sie als fertigen Schlüssel lesen)."
+_MSG_FILE = "Die Datenbankdatei kann nicht angelegt oder geschützt werden. Rechte und Speicherplatz prüfen."
 _MSG_WRONG = "Falsche Passphrase, oder die Datei ist keine ADA-Datenbank."
 _MSG_CLOSED = "Die Datenbank ist geschlossen."
 _MSG_BAD_DATA = "Ungültige Daten."
@@ -52,6 +54,12 @@ def _check_passphrase(passphrase):
     if not (isinstance(passphrase, str) and MIN_PASSPHRASE <= len(passphrase) <= MAX_PASSPHRASE
             and "\x00" not in passphrase):
         raise StoreError(_MSG_BAD_PASSPHRASE)
+    try:
+        passphrase.encode("utf-8")  # lone surrogates cannot be encoded
+    except UnicodeEncodeError:
+        raise StoreError(_MSG_BAD_PASSPHRASE) from None
+    if passphrase.lower().startswith("x'"):  # SQLCipher's raw-key format skips the key derivation
+        raise StoreError(_MSG_RAW_KEY)
 
 
 def _text(value, limit, empty_ok=False):
@@ -70,9 +78,14 @@ class Store:
             raise StoreError(_MSG_NO_CIPHER)
         _check_passphrase(passphrase)
         path = os.fspath(path)
-        new = not os.path.exists(path)
-        if new:  # private from the first byte
-            os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+        try:
+            exists = os.path.exists(path)
+            new = not exists or os.path.getsize(path) == 0  # an empty file: a start that was interrupted
+            if not exists:  # private from the first byte
+                os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+            os.chmod(path, 0o600)  # also tightens an old or restored file
+        except OSError:
+            raise StoreError(_MSG_FILE) from None
         self._lock = threading.Lock()
         self._conn = None
         try:
@@ -84,15 +97,19 @@ class Store:
                 raise StoreError(_MSG_NO_CIPHER)
             conn.execute("PRAGMA foreign_keys = ON")
             conn.execute("PRAGMA secure_delete = ON")
+            conn.execute("PRAGMA temp_store = MEMORY")  # temporary files are not encrypted
             tables = conn.execute("SELECT name FROM sqlite_master").fetchall()  # fails if the key is wrong
-            if new:
-                conn.executescript(_SCHEMA)
-                conn.execute("INSERT INTO meta VALUES ('schema', ?)", (str(_SCHEMA_VERSION),))
-                conn.execute("INSERT INTO memory VALUES (1, '')")
-                conn.commit()
+            if new:  # one transaction: all or nothing
+                conn.executescript("BEGIN;" + _SCHEMA
+                                   + f"INSERT INTO meta VALUES ('schema', '{_SCHEMA_VERSION}');"
+                                   + "INSERT INTO memory VALUES (1, ''); COMMIT;")
             else:
-                row = conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone() if tables else None
-                if not row or row[0] != str(_SCHEMA_VERSION):
+                names = {t[0] for t in tables}
+                if not {"meta", "chats", "messages", "memory"} <= names:
+                    raise StoreError(_MSG_WRONG)
+                row = conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
+                if not row or row[0] != str(_SCHEMA_VERSION) \
+                        or not conn.execute("SELECT 1 FROM memory WHERE id = 1").fetchone():
                     raise StoreError(_MSG_WRONG)
         except StoreError:
             self._abort(path, new)
@@ -115,16 +132,21 @@ class Store:
         if conn is not None:
             conn.close()
 
-    def _run(self, sql, args=(), write=False, one=False):
+    def _run(self, sql, args=(), write=False, one=False, then=None):
+        """Run one statement (and optionally a second one, `then`, in the same
+        transaction), commit if `write`."""
         with self._lock:
             if self._conn is None:
                 raise StoreError(_MSG_CLOSED)
             try:
                 cur = self._conn.execute(sql, args)
                 rows = cur.fetchone() if one else cur.fetchall()
+                last = cur.lastrowid
+                if then:
+                    self._conn.execute(*then)
                 if write:
                     self._conn.commit()
-                return rows, cur.lastrowid
+                return rows, last
             except _db.Error:
                 self._conn.rollback()
                 raise StoreError(_MSG_BAD_DATA) from None
@@ -151,8 +173,8 @@ class Store:
             raise StoreError(_MSG_BAD_DATA)
         now = time.time()
         _, msg_id = self._run("INSERT INTO messages (chat_id, role, content, created) VALUES (?, ?, ?, ?)",
-                              (chat_id, role, _text(content, MAX_MESSAGE, empty_ok=True), now), write=True)
-        self._run("UPDATE chats SET updated = ? WHERE id = ?", (now, chat_id), write=True)
+                              (chat_id, role, _text(content, MAX_MESSAGE, empty_ok=True), now), write=True,
+                              then=("UPDATE chats SET updated = ? WHERE id = ?", (now, chat_id)))
         return msg_id
 
     def get_messages(self, chat_id):
