@@ -10,6 +10,7 @@ import threading
 
 # ada.store must be imported BEFORE gi: once GTK has loaded the system's plain
 # SQLite library, sqlcipher3 would silently use it and encrypt nothing.
+from ada.render import parse as parse_markdown
 from ada.store import MAX_MEMORY, MAX_MESSAGE, MIN_PASSPHRASE, Store, StoreError  # isort: skip
 from ada.detect import find_ollama, find_searxng  # isort: skip
 from ada.ollama import (DEFAULT_URL, ChatStream, OllamaError, list_models,  # isort: skip
@@ -20,7 +21,7 @@ import gi  # noqa: E402
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, GLib, GObject, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, GLib, GObject, Gtk, Pango  # noqa: E402
 
 APP_ID = "io.github.AtomicForge.Ada"
 MEMORY_HEADER = ("Known facts about the user, reviewed by the user. Use them when they help. "
@@ -83,6 +84,16 @@ class UnlockPage(Gtk.Box):
         self._on_unlock(store)
 
 
+def _make_tags(buffer):
+    """Styles for the safe Markdown subset: they only change how text looks."""
+    buffer.create_tag("bold", weight=Pango.Weight.BOLD)
+    buffer.create_tag("italic", style=Pango.Style.ITALIC)
+    buffer.create_tag("code", family="monospace")
+    buffer.create_tag("codeblock", family="monospace", left_margin=18)
+    for name, scale in (("h1", 1.4), ("h2", 1.2), ("h3", 1.1)):
+        buffer.create_tag(name, weight=Pango.Weight.BOLD, scale=scale)
+
+
 class ChatPage(Gtk.Box):
     """One chat: the text so far, a model chooser, an input line, Send/Stop.
     The text is shown in a TextView, which never interprets markup."""
@@ -101,11 +112,18 @@ class ChatPage(Gtk.Box):
         self._answer_len, self._too_long = 0, False
         self._last_model, self._last_text = None, ""
         self._text = Gtk.TextView(editable=False, cursor_visible=False, left_margin=6, right_margin=6,
-                                  wrap_mode=Gtk.WrapMode.WORD_CHAR)
+                                  wrap_mode=Gtk.WrapMode.WORD_CHAR, css_classes=["chat"])
         self._buffer = self._text.get_buffer()
+        _make_tags(self._buffer)
+        self._answer_mark = None
         if chat_id is not None:
             for m in store.get_messages(chat_id):
-                self._show(("You: " if m["role"] == "user" else "ADA: ") + m["content"] + "\n\n")
+                if m["role"] == "user":
+                    self._show("You: " + m["content"] + "\n\n")
+                else:
+                    self._show("ADA: ")
+                    self._show_rich(m["content"])
+                    self._show("\n\n")
         scroll = Gtk.ScrolledWindow(vexpand=True, child=self._text)
         self.append(scroll)
         if chat_id is not None:  # an old chat opens at its end
@@ -233,6 +251,25 @@ class ChatPage(Gtk.Box):
         """Append text. It never scrolls: the reader decides where to look."""
         self._buffer.insert(self._buffer.get_end_iter(), text)
 
+    def _show_rich(self, text):
+        for piece, tag in parse_markdown(text):
+            end = self._buffer.get_end_iter()
+            if tag:
+                self._buffer.insert_with_tags_by_name(end, piece, tag)
+            else:
+                self._buffer.insert(end, piece)
+
+    def _format_answer(self):
+        """The answer streams as plain text; when it is complete, show it formatted."""
+        mark, self._answer_mark = self._answer_mark, None
+        if mark is None:
+            return
+        shown = "".join(self._answer)
+        if shown:
+            self._buffer.delete(self._buffer.get_iter_at_mark(mark), self._buffer.get_end_iter())
+            self._show_rich(shown)
+        self._buffer.delete_mark(mark)
+
     def _send(self, *_):
         text = self._entry.get_text().strip()
         item = self._dropdown.get_selected_item()
@@ -264,6 +301,7 @@ class ChatPage(Gtk.Box):
         self._busy, self._stopped = True, False
         start = self._buffer.create_mark(None, self._buffer.get_end_iter(), True)
         self._show(f"You: {text}\n\nADA: ")
+        self._answer_mark = self._buffer.create_mark(None, self._buffer.get_end_iter(), True)
         self._text.scroll_to_mark(start, 0.0, True, 0.0, 0.0)  # once: your question at the top
         self._buffer.delete_mark(start)
         query = text if self._search.get_active() else ""
@@ -323,7 +361,7 @@ class ChatPage(Gtk.Box):
         except StoreError:
             return
         if added and not self._busy:
-            self._info.set_text("Gemerkt: " + "; ".join(added))
+            self._info.set_text("Remembered: " + " · ".join(added))
 
     def _piece(self, piece):
         if self._too_long:
@@ -346,6 +384,7 @@ class ChatPage(Gtk.Box):
                 self._store.add_message(self._chat_id, "assistant", answer)
         except StoreError as exc:
             error = error or str(exc)
+        self._format_answer()
         self._show("\n\n")
         self._on_change()
         self._status.set_text(error)
@@ -656,6 +695,10 @@ class App(Adw.Application):
         super().__init__(application_id=APP_ID)
 
     def do_activate(self):
+        css = Gtk.CssProvider()
+        css.load_from_string("textview.chat, textview.chat text { background: none; }")
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         (self.props.active_window or Window(application=self)).present()
 
 
