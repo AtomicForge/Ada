@@ -1,0 +1,53 @@
+app-id: io.github.AtomicForge.Ada
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+command: ada
+
+finish-args:
+  - --socket=wayland
+  - --share=network
+  - --device=dri
+
+modules:
+  - name: tcl
+    subdir: unix
+    config-opts:
+      - --disable-shared
+    cleanup: ['*']
+    sources:
+      - type: archive
+        url: https://downloads.sourceforge.net/tcl/tcl8.6.18-src.tar.gz
+        sha256: 14f9af32b1767ff718477a8f974ad03c34341097e6b43f4ce54644ee974e268e
+
+  - name: sqlcipher3
+    buildsystem: simple
+    build-commands:
+      - cd sqlcipher-src && ./configure --enable-update-limit && make sqlite3.c
+      - echo "0f9aef09d4a80356f6b2d42dabfa3a8bd1ad2afc5b9cac04fb79f3873fa24bbc  sqlcipher-src/sqlite3.c" | sha256sum -c
+      - cp sqlcipher-src/sqlite3.c sqlcipher-src/sqlite3.h sqlcipher3/vendor/
+      - pip3 install --no-index --no-build-isolation --prefix=${FLATPAK_DEST} ./sqlcipher3
+    sources:
+      - type: archive
+        url: https://github.com/sqlcipher/sqlcipher/archive/refs/tags/v4.20.0.tar.gz
+        sha256: 38705f51b61ac0636a5fd064f9a77fafabc7227b2aa2513f1b14c8bb1102affc
+        dest: sqlcipher-src
+      - type: archive
+        url: https://files.pythonhosted.org/packages/source/s/sqlcipher3/sqlcipher3-0.6.5.tar.gz
+        sha256: 368a77f1bc8f6a5b88a7b0774bcf681dc8127511948727a359223629efd9d634
+        dest: sqlcipher3
+
+  - name: ada
+    buildsystem: simple
+    build-commands:
+      - cp -r ada ${FLATPAK_DEST}/lib/python3.14/site-packages/
+      - install -Dm755 data/ada ${FLATPAK_DEST}/bin/ada
+      - install -Dm644 data/io.github.AtomicForge.Ada.desktop -t ${FLATPAK_DEST}/share/applications
+      - install -Dm644 data/io.github.AtomicForge.Ada.metainfo.xml -t ${FLATPAK_DEST}/share/metainfo
+      - install -Dm644 data/icons/io.github.AtomicForge.Ada-512.png ${FLATPAK_DEST}/share/icons/hicolor/512x512/apps/io.github.AtomicForge.Ada.png
+      - install -Dm644 data/icons/io.github.AtomicForge.Ada-256.png ${FLATPAK_DEST}/share/icons/hicolor/256x256/apps/io.github.AtomicForge.Ada.png
+      - install -Dm644 data/icons/io.github.AtomicForge.Ada-128.png ${FLATPAK_DEST}/share/icons/hicolor/128x128/apps/io.github.AtomicForge.Ada.png
+      - install -Dm644 data/icons/io.github.AtomicForge.Ada-symbolic.svg -t ${FLATPAK_DEST}/share/icons/hicolor/symbolic/apps
+    sources:
+      - type: dir
+        path: .
