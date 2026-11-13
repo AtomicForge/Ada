@@ -39,6 +39,6 @@
     <display_length compare="ge">360</display_length>
   </requires>
   <releases>
-    <release version="0.1.0" date="2026-11-07"/>
+    <release version="0.1.0" date="2026-11-13"/>
   </releases>
 </component>
