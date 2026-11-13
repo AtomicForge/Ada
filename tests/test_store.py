@@ -154,6 +154,37 @@ class OpenTests(Base):
         self.assertNotIn(SECRET.encode(), raw)
         self.assertNotIn(b"messages", raw)
 
+    def _files_next_to_db(self):
+        """The database and everything SQLite may put next to it (journal, wal, shm)."""
+        folder, base = os.path.dirname(self.path), os.path.basename(self.path)
+        return [os.path.join(folder, n) for n in sorted(os.listdir(folder)) if n.startswith(base)]
+
+    def _assert_no_marker(self):
+        files = self._files_next_to_db()
+        self.assertTrue(files)
+        for path in files:
+            with open(path, "rb") as f:
+                self.assertNotIn(SECRET.encode(), f.read(), path)
+
+    def test_marker_scan_finds_a_leak(self):  # the scan itself can fail
+        open(self.path + "-journal", "wb").write(b"xx " + SECRET.encode())
+        open(self.path, "wb").close()
+        with self.assertRaises(AssertionError):
+            self._assert_no_marker()
+
+    @unittest.skipUnless(REAL, "real SQLCipher needed")
+    def test_real_no_marker_in_any_file_and_permissions_0600(self):
+        import stat
+        s = self.open()
+        chat = s.create_chat(SECRET, "m")
+        s.add_message(chat, "user", SECRET)
+        s.set_memory(SECRET)
+        self._assert_no_marker()  # while the database is open (journal, temp files)
+        for path in self._files_next_to_db():
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600, path)
+        s.close()
+        self._assert_no_marker()  # after closing
+
     @unittest.skipUnless(REAL, "real SQLCipher needed")
     def test_real_plain_sqlite_file_is_not_opened(self):
         import sqlite3
